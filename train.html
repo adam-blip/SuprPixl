@@ -15,11 +15,15 @@ function sleep(ms) {
 <script>//global vars
 	var imageCanvas, predictedCanvas, ctxImageCanvas, ctxPredictedCanvas;
 	function globalVars(){
-		MODEL_SAVE_NAME = 'suprpixl0003';
-		LEARNING_RATE = 0.01;
+		MODEL_SAVE_NAME = 'suprpixl0020'; // model name for saving in browser
+		LEARNING_RATE = 0.001;
 		OPTIMIZER = tf.train.adam(LEARNING_RATE);
-		LOSS = 'meanAbsolutePercentageError';
-		iterations = 100;
+		//LOSS = 'meanAbsolutePercentageError';
+		//LOSS = 'meanSquaredError';
+		LOSS = 'meanAbsoluteError';
+		iterations = 250;
+		EPOCHS = 5;
+		filters = 4;
 		console.log(tf.version);
 		tf.disableDeprecationWarnings();
 		tf.enableProdMode();
@@ -95,24 +99,40 @@ async function loadModel(){
 
 		blackAndWhite = tf.layers.separableConv2d({kernelSize: 3, filters: 1, padding: 'same'}).apply(input);
 
-		incrementFilters = tf.layers.separableConv2d({kernelSize: 3, filters: 32, padding: 'same'}).apply(blackAndWhite);
+		incrementFilters = tf.layers.separableConv2d({kernelSize: 3, filters: filters, padding: 'same'}).apply(blackAndWhite);
 
 		x = incrementFilters;
 		
 		function channelAttention(inputs){
-			outputs = tf.layers.globalAveragePooling2d({}).apply(inputs);
-			outputs = tf.layers.dense({units: 8, activation: 'relu'}).apply(outputs) //reduction like in RCAN 
-    		outputs = tf.layers.dense({units: 32, activation: 'sigmoid'}).apply(outputs);
-			outputs = tf.layers.reshape({targetShape: [1, 1, 32]}).apply(outputs);
+			conv = tf.layers.separableConv2d({kernelSize: 3, filters: filters, padding: 'same', activation: 'relu'}).apply(inputs);
+
+			outputs = tf.layers.globalAveragePooling2d({}).apply(conv);
+			outputs = tf.layers.dense({units: (filters / 4), activation: 'relu'}).apply(outputs) //reduction like in RCAN 
+    		outputs = tf.layers.dense({units: filters, activation: 'sigmoid'}).apply(outputs);
+			outputs = tf.layers.reshape({targetShape: [1, 1, filters]}).apply(outputs);
 			outputs = tf.layers.multiply({}).apply([inputs, outputs]);
 			outputs = tf.layers.add({}).apply([inputs, outputs]);
 			return outputs;
 		}
 		x = channelAttention(x);
 		x = channelAttention(x);
-		x = channelAttention(x);
+		//x = channelAttention(x);
 
-		upscaledBlackAndWhite = tf.layers.conv2dTranspose ({kernelSize: 8, strides: 2, filters: 1, activation: 'tanh', padding: 'same'}).apply(x);
+		function pixelShuffle(inputs){
+
+console.log(inputs.shape);
+			outputs = tf.layers.reshape({targetShape: [inputs.shape[1], inputs.shape[2], 1, 2, 2]}).apply(inputs);
+console.log(outputs.shape);
+			outputs = tf.layers.permute({dims: [3, 2, 4, 1, 5]}).apply(outputs);
+console.log(outputs.shape);
+    		outputs = tf.layers.reshape({targetShape: [1, outputs.shape[2] * 2, outputs.shape[4] * 2]}).apply(outputs);
+console.log(outputs.shape);
+			outputs = tf.layers.permute({dims: [3, 2, 1]}).apply(outputs);
+console.log(outputs.shape);
+			return outputs;
+		}
+		//upscaledBlackAndWhite = tf.layers.conv2dTranspose ({kernelSize: 8, strides: 2, filters: 1, activation: 'linear', padding: 'same'}).apply(x);
+		upscaledBlackAndWhite = pixelShuffle(x);
 		upscaledBlackAndWhite = tf.layers.concatenate().apply([upscaledBlackAndWhite, upscaledBlackAndWhite, upscaledBlackAndWhite]);
 
 		output = tf.layers.add({}).apply([upscaledBlackAndWhite, upscaledColors]);
@@ -160,8 +180,10 @@ async function startTraining(){
 //await sleep(1000000);
 	batch = getBatch(1);
 	for (let counter = 0; counter < iterations; counter++){
-		history = await model.fit(batch.x, batch.y, {batchSize: 1, epochs: 5});
-		document.getElementById("log").innerHTML = ("LOSS: " + history.history.loss[0].toFixed(4));
+		startTimer = performance.now();
+		history = await model.fit(tf.div(batch.x, tf.scalar(256)), tf.div(batch.y, tf.scalar(256)), {batchSize: 1, epochs: EPOCHS});
+		stopTimer = performance.now();
+		document.getElementById("log").innerHTML = ("LOSS: " + history.history.loss[0].toFixed(5) + " in " + (stopTimer - startTimer).toFixed(0) + "ms.");
 		predictedImage = tf.tidy(() => {
 			return tf.div(model.predict(batch.x), tf.scalar(256)).clipByValue(0, 1);
 		});
@@ -175,8 +197,8 @@ async function startTraining(){
 </head>
 <body>
 	<div id="log"></div>
-	<img id="smallTrainingImage" src="dataset/test_128p.jpg"/> (low resolution)<br/>
-	<img id="bigTrainingImage" src="dataset/test_256p.jpg"/> (ground truth)<br/>
+	<img id="smallTrainingImage" src="test_128p.jpg"/> (low resolution)<br/>
+	<img id="bigTrainingImage" src="test_256p.jpg"/> (ground truth)<br/>
 	<canvas id="predicted"></canvas> (predicted output)<br/>
 </body>
 <script>
