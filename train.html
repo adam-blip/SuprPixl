@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<head>
+<title>SuprPixl by @BenjaminWegener</title>
+<!---------------------------------------------------------------------------->
+<script src="tf.js"> </script>
+
+<!---------------------------------------------------------------------------->
+<script>//https://stackoverflow.com/a/39914235
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+</script> 
+
+<!---------------------------------------------------------------------------->
+<script>//global vars
+	var imageCanvas, predictedCanvas, ctxImageCanvas, ctxPredictedCanvas;
+	function globalVars(){
+		MODEL_SAVE_NAME = 'suprpixl0003';
+		LEARNING_RATE = 0.01;
+		OPTIMIZER = tf.train.adam(LEARNING_RATE);
+		LOSS = 'meanAbsolutePercentageError';
+		iterations = 100;
+		console.log(tf.version);
+		tf.disableDeprecationWarnings();
+		tf.enableProdMode();
+		tf.webgl.forceHalfFloat();
+	}
+</script>
+	
+<!---------------------------------------------------------------------------->
+<script>
+/******************************************************************************
+ * tensorflow.js lambda layer
+ * written by twitter.com/benjaminwegener
+ * license: MIT
+ */
+class lambdaLayer extends tf.layers.Layer {
+    constructor(config) {
+        super(config);
+        if (config.name === undefined) {
+            config.name = ((+new Date) * Math.random()).toString(36); //random name from timestamp in case name hasn't been set
+        }
+        this.name = config.name;
+        this.lambdaFunction = config.lambdaFunction;
+        this.lambdaOutputShape = config.lambdaOutputShape;
+    }
+
+    call(input) {
+        return tf.tidy(() => {
+            let result = null;
+            eval(this.lambdaFunction);
+            return result;
+        });
+    }
+
+    computeOutputShape(inputShape) {
+        if (this.lambdaOutputShape === undefined) { //if no outputshape provided, try to set as inputshape
+            return inputShape[0];
+        } else {
+            return this.lambdaOutputShape;
+        }
+    }
+
+    getConfig() {
+        const config = super.getConfig();
+        Object.assign(config, {
+            lambdaFunction: this.lambdaFunction,
+   lambdaOutputShape: this.lambdaOutputShape
+        });
+        return config;
+    }
+
+    static get className() {
+        return 'lambdaLayer';
+    }
+}
+tf.serialization.registerClass(lambdaLayer);
+
+</script>
+
+<!---------------------------------------------------------------------------->
+<script>
+async function loadModel(){
+	try {
+		model = await tf.loadLayersModel('indexeddb://' + MODEL_SAVE_NAME);
+		model.compile({optimizer: OPTIMIZER, loss : LOSS});
+		console.log('successfully loaded...');
+	}catch(err){
+		console.log(err+'no model found, building new...');
+		
+		//input = tf.input({shape: [null,null,3]});
+		input = tf.input({shape: [128, 128, 3]});
+
+		upscaledColors = tf.layers.upSampling2d({size: [2, 2]}).apply(input);
+
+		blackAndWhite = tf.layers.separableConv2d({kernelSize: 3, filters: 1, padding: 'same'}).apply(input);
+
+		incrementFilters = tf.layers.separableConv2d({kernelSize: 3, filters: 32, padding: 'same'}).apply(blackAndWhite);
+
+		x = incrementFilters;
+		
+		function channelAttention(inputs){
+			outputs = tf.layers.globalAveragePooling2d({}).apply(inputs);
+			outputs = tf.layers.dense({units: 8, activation: 'relu'}).apply(outputs) //reduction like in RCAN 
+    		outputs = tf.layers.dense({units: 32, activation: 'sigmoid'}).apply(outputs);
+			outputs = tf.layers.reshape({targetShape: [1, 1, 32]}).apply(outputs);
+			outputs = tf.layers.multiply({}).apply([inputs, outputs]);
+			outputs = tf.layers.add({}).apply([inputs, outputs]);
+			return outputs;
+		}
+		x = channelAttention(x);
+		x = channelAttention(x);
+		x = channelAttention(x);
+
+		upscaledBlackAndWhite = tf.layers.conv2dTranspose ({kernelSize: 8, strides: 2, filters: 1, activation: 'tanh', padding: 'same'}).apply(x);
+		upscaledBlackAndWhite = tf.layers.concatenate().apply([upscaledBlackAndWhite, upscaledBlackAndWhite, upscaledBlackAndWhite]);
+
+		output = tf.layers.add({}).apply([upscaledBlackAndWhite, upscaledColors]);
+
+//		const output = new lambdaLayer({lambdaFunction: 'result = tf.matMul(input[0], input[1], false, true);', lambdaOutputShape: a.shape}).apply([a, b]).print(true);
+
+
+		// Create the model based on the inputs.
+		model = tf.model({inputs: input, outputs: output});
+
+		await model.save('indexeddb://' + MODEL_SAVE_NAME);
+		model.compile({optimizer: OPTIMIZER, loss : LOSS});
+		
+	}
+
+}
+</script>
+
+<!---------------------------------------------------------------------------->
+<script>//get a random patch from training imageimages from dataset
+	function getBatch(rndsize){
+	
+		smallImageArray = [];
+		bigImageArray = [];
+		bigTrainingImage = tf.tidy(()=>{
+			return tf.browser.fromPixels(document.getElementById('bigTrainingImage'), 3)
+		});
+		smallTrainingImage = tf.tidy(()=>{
+			return tf.browser.fromPixels(document.getElementById('smallTrainingImage'), 3)
+		});
+		smallImageArray.push(smallTrainingImage);
+		bigImageArray.push(bigTrainingImage);
+		return {
+			x : tf.stack(smallImageArray),
+			y : tf.stack(bigImageArray)
+		}
+	}
+	</script>
+
+<!---------------------------------------------------------------------------->
+<script>//train loop
+async function startTraining(){
+	var history;
+	console.log(model.summary());
+//await sleep(1000000);
+	batch = getBatch(1);
+	for (let counter = 0; counter < iterations; counter++){
+		history = await model.fit(batch.x, batch.y, {batchSize: 1, epochs: 5});
+		document.getElementById("log").innerHTML = ("LOSS: " + history.history.loss[0].toFixed(4));
+		predictedImage = tf.tidy(() => {
+			return tf.div(model.predict(batch.x), tf.scalar(256)).clipByValue(0, 1);
+		});
+
+		await tf.browser.toPixels(tf.unstack(predictedImage)[0],predicted);
+		await model.save('indexeddb://' + MODEL_SAVE_NAME);
+	}
+}
+</script>
+<!---------------------------------------------------------------------------->
+</head>
+<body>
+	<div id="log"></div>
+	<img id="smallTrainingImage" src="dataset/test_128p.jpg"/> (low resolution)<br/>
+	<img id="bigTrainingImage" src="dataset/test_256p.jpg"/> (ground truth)<br/>
+	<canvas id="predicted"></canvas> (predicted output)<br/>
+</body>
+<script>
+window.onload = async function(){
+	setTimeout(async function(){
+		await globalVars();
+		await loadModel();
+		await startTraining();
+	}, 1000);
+}
+</script>
+</html>
