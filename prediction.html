@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<head>
+<title>SuprPixl by @BenjaminWegener</title>
+<!---------------------------------------------------------------------------->
+<script src="tf.js"> </script>
+
+<!---------------------------------------------------------------------------->
+<script>//https://stackoverflow.com/a/39914235
+	function sleep(ms) {
+	  return new Promise(resolve => setTimeout(resolve, ms));
+	}
+</script> 
+	
+<!---------------------------------------------------------------------------->
+<script>//global vars
+	function globalVars(){
+		height = 128; //can be changed before prediction, because we only save the weights and build the model from scratch each time
+		width = 128;
+		fileCounter = 0;
+		console.log(tf.version);
+		tf.disableDeprecationWarnings();
+		tf.enableProdMode();
+		tf.webgl.forceHalfFloat();
+		document.getElementById('uploaded').height = height;
+		document.getElementById('uploaded').width = width;
+		document.getElementById('predicted').height = height;
+		document.getElementById('predicted').width = width;
+	}
+</script>
+
+<!---------------------------------------------------------------------------->
+<script>//build and load model
+async function startPrediction(){
+	document.getElementById('input').style = "display: none";
+    console.log('loading model...');
+    let model = await tf.loadLayersModel(tf.io.browserFiles([json, weights]));
+	console.log('loading uploaded image...');
+	document.getElementById('uploadedImage').src = URL.createObjectURL(image);
+	await sleep(1000);
+	document.getElementById('uploaded').getContext('2d').drawImage(document.getElementById('uploadedImage'), 0, 0); 
+	console.log('converting uploaded image...');
+	let lowResolution = [];
+	lowResolution.push( tf.tidy(()=>{
+		return tf.div(tf.browser.fromPixels(document.getElementById('uploaded'), 3), tf.scalar(256));
+	}));
+	console.log('predicting upscaled image...');
+	let highResolution = tf.tidy(() => {
+		return model.predict(tf.stack(lowResolution)).clipByValue(0, 1);
+	});
+	console.log('showing upscaled image...');
+	await tf.browser.toPixels(tf.unstack(highResolution)[0], predicted);
+	console.log('showing browser upscaled image...');
+	document.getElementById('browserScaled').src = URL.createObjectURL(image);
+	document.getElementById('browserScaled').height = height * 2;
+	document.getElementById('browserScaled').width = width * 2;
+	document.getElementById('output').style = "display: unset";
+}
+</script>
+
+<!---------------------------------------------------------------------------->
+<script>//event handler
+var loadedJSON = function(event) {
+	if(typeof json === 'undefined'){fileCounter++;}
+	json = event.target.files[0];
+	if (fileCounter == 3){startPrediction();}
+};
+var loadedWeights = function(event) {
+	if(typeof weights === 'undefined'){fileCounter++;}
+	weights = event.target.files[0];
+	if (fileCounter == 3){startPrediction();}
+};
+var loadedImage = function(event) {
+	if(typeof image === 'undefined'){fileCounter++;}
+    image = event.target.files[0];
+	if (fileCounter == 3){startPrediction();}
+};
+</script>
+
+<!---------------------------------------------------------------------------->
+</head> <!-- html document -->
+<body>
+	<div id="log"></div><br/>
+	<div id="input">
+		<input type="file" id="upload-json" accept="application/json" onchange="loadedJSON(event)"/> (model json file)<br/>
+		<input type="file" id="upload-weights" accept=".bin" onchange="loadedWeights(event)"/> (model weights)<br/>
+		<input type="file" id="upload-image" accept="image/*" onchange="loadedImage(event)"/> (image file)<br/>
+	</div>
+	<div id="output" style="display: none">
+		<canvas id="uploaded"></canvas> (uploaded image)<br/>
+		<canvas id="predicted"></canvas> (upscaled image)<br/>
+		<img id="browserScaled"/> (upscaled by browser)<br/>
+		<img id="uploadedImage" style="display: none"/>
+	</div>
+</body>
+
+<!---------------------------------------------------------------------------->
+<script>//starting function
+	window.onload = async function(){
+		setTimeout(async function(){
+			await globalVars();
+		}, 1000);
+	}
+	</script>
+	</html>
+</html>

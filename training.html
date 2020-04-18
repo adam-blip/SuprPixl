@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<head>
+<title>SuprPixl by @BenjaminWegener</title>
+<!---------------------------------------------------------------------------->
+<script src="tf.js"> </script>
+
+<!---------------------------------------------------------------------------->
+<script>//https://stackoverflow.com/a/39914235
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+</script> 
+
+<!---------------------------------------------------------------------------->
+<script>//global vars
+	function globalVars(){
+		MODEL_SAVE_NAME = 'suprpixl'; // model name for saving in browser
+		LEARNING_RATE = 0.001;
+		OPTIMIZER = tf.train.adam(LEARNING_RATE);
+		LOSS = 'meanAbsoluteError';
+		iterations = 500;
+		height = 128; //can be changed before prediction, because we only save the weights and build the model from scratch each time
+		width = 128;
+		EPOCHS = 1;
+		console.log(tf.version);
+		tf.disableDeprecationWarnings();
+		tf.enableProdMode();
+		tf.webgl.forceHalfFloat();
+	}
+</script>
+
+<!---------------------------------------------------------------------------->
+<script>//build and load model
+async function loadModel(){
+	try {
+//throw new Error(); ///////////////////////////////////////////////////////////////////////
+		model = await tf.loadLayersModel('indexeddb://' + MODEL_SAVE_NAME);
+		model.compile({optimizer: OPTIMIZER, loss : LOSS});
+		console.log('successfully loaded...');
+	}catch(err){
+		console.log(err+'no model found, building new...');
+		
+		input = tf.input({shape: [height, width, 3]});
+        output = input;
+        output =  tf.layers.separableConv2d({kernelSize: 3, filters: 48, padding: 'same', strides: 1, activation: 'relu'}).apply(output);
+		output =  tf.layers.conv2d({kernelSize: 8, filters: 192, padding: 'same', strides: 4, activation: 'linear'}).apply(output);
+		
+        function pixelShuffle(inputs, filters){
+			outputs = inputs;
+            outputs = tf.layers.permute({dims: [3, 1, 2]}).apply(outputs);
+			outputs = tf.layers.reshape({targetShape: [2, 2, outputs.shape[1] / 4, outputs.shape[2], outputs.shape[3]]}).apply(outputs);
+			outputs = tf.layers.permute({dims: [3, 4, 1, 5, 2]}).apply(outputs);
+			outputs = tf.layers.reshape({targetShape: [outputs.shape[1], outputs.shape[2] * outputs.shape[3], outputs.shape[4] * outputs.shape[5]]}).apply(outputs);
+			outputs = tf.layers.permute({dims: [2, 3, 1]}).apply(outputs);
+			return outputs;
+		}
+
+		function channelAttention(inputs, filters){
+            outputs = inputs;
+			outputs = tf.layers.globalAveragePooling2d({}).apply(outputs);
+    		outputs = tf.layers.dense({units: filters / 4, activation: 'relu6'}).apply(outputs);
+			outputs = tf.layers.dense({units: filters, activation: 'sigmoid'}).apply(outputs);
+			outputs = tf.layers.reshape({targetShape: [1, 1, filters]}).apply(outputs);
+			outputs = tf.layers.multiply({}).apply([inputs, outputs]);
+			return outputs;
+		}		
+		function channelAttentionConv(inputs, filters){
+            outputs = inputs;
+			outputs = tf.layers.globalAveragePooling2d({}).apply(outputs);
+    		outputs = tf.layers.reshape({targetShape: [1, 1, filters]}).apply(outputs);
+			outputs = tf.layers.conv2d({kernelSize: [1, 5], filters: filters / 4, padding: 'same', strides: 1, activation: 'relu6'}).apply(outputs);
+			outputs = tf.layers.conv2d({kernelSize: [1, 5], filters: filters, padding: 'same', strides: 1, activation: 'sigmoid'}).apply(outputs);
+			outputs = tf.layers.multiply({}).apply([inputs, outputs]);
+			outputs = tf.layers.add({}).apply([inputs, outputs]);
+			return outputs;
+		}
+
+		output = pixelShuffle(output, 192);
+		output = pixelShuffle(output, 48);
+		output = pixelShuffle(output, 12);
+
+		upscaled = tf.layers.upSampling2d({size: [2, 2]}).apply(input);
+		output = tf.layers.add().apply([upscaled, output])
+		model = tf.model({inputs: input, outputs: output});
+
+		await model.save('indexeddb://' + MODEL_SAVE_NAME);
+		model.compile({optimizer: OPTIMIZER, loss : LOSS});
+	}
+}
+</script>
+
+<!---------------------------------------------------------------------------->
+<script>//get the training images
+	function getBatch(){
+	
+		smallImageArray = [];
+		bigImageArray = [];
+		smallValidationImageArray = [];
+		bigValidationImageArray = [];
+		
+		bigTrainingImage1 = tf.tidy(()=>{
+			return tf.div(tf.browser.fromPixels(document.getElementById('bigTrainingImage1'), 3), tf.scalar(256));
+		});
+		bigTrainingImage2 = tf.tidy(()=>{
+			return tf.div(tf.browser.fromPixels(document.getElementById('bigTrainingImage2'), 3), tf.scalar(256));
+		});
+		bigTrainingImage3 = tf.tidy(()=>{
+			return tf.div(tf.browser.fromPixels(document.getElementById('bigTrainingImage3'), 3), tf.scalar(256));
+		});
+		bigTrainingImage4 = tf.tidy(()=>{
+			return tf.div(tf.browser.fromPixels(document.getElementById('bigTrainingImage4'), 3), tf.scalar(256));
+		});
+		
+		smallTrainingImage1 = tf.tidy(()=>{
+			return tf.div(tf.browser.fromPixels(document.getElementById('smallTrainingImage1'), 3), tf.scalar(256));
+		});
+		smallTrainingImage2 = tf.tidy(()=>{
+			return tf.div(tf.browser.fromPixels(document.getElementById('smallTrainingImage2'), 3), tf.scalar(256));
+		});
+		smallTrainingImage3 = tf.tidy(()=>{
+			return tf.div(tf.browser.fromPixels(document.getElementById('smallTrainingImage3'), 3), tf.scalar(256));
+		});
+		smallTrainingImage4 = tf.tidy(()=>{
+			return tf.div(tf.browser.fromPixels(document.getElementById('smallTrainingImage4'), 3), tf.scalar(256));
+		});
+		
+		smallValidationImage = tf.tidy(()=>{
+			return tf.div(tf.browser.fromPixels(document.getElementById('smallValidationImage'), 3), tf.scalar(256));
+		});
+		bigValidationImage = tf.tidy(()=>{
+			return tf.div(tf.browser.fromPixels(document.getElementById('bigValidationImage'), 3), tf.scalar(256));
+		});
+		
+		smallImageArray.push(smallTrainingImage1);
+		smallImageArray.push(smallTrainingImage2);
+		smallImageArray.push(smallTrainingImage3);
+		smallImageArray.push(smallTrainingImage4);
+		bigImageArray.push(bigTrainingImage1);
+		bigImageArray.push(bigTrainingImage2);
+		bigImageArray.push(bigTrainingImage3);
+		bigImageArray.push(bigTrainingImage4);
+
+		smallValidationImageArray.push(smallValidationImage);
+		bigValidationImageArray.push(bigValidationImage);
+		return {
+			x : tf.stack(smallImageArray),
+			y : tf.stack(bigImageArray),
+			vx : tf.stack(smallValidationImageArray),
+			vy : tf.stack(bigValidationImageArray)
+		}
+	}
+</script>
+
+<!---------------------------------------------------------------------------->
+<script>//train loop
+async function startTraining(){
+	var history;
+	console.log(model.summary());
+	let batch = getBatch();
+	for (let counter = 0; counter < iterations; counter++){
+		let startTimerTraining = performance.now();
+		history = await model.fit(batch.x, batch.y, {batchSize: 1, epochs: EPOCHS});
+		let stopTimerTraining = performance.now();
+
+		let startTimerPrediction = performance.now();
+		//let predictedImage = tf.tidy(() => {
+		//	return model.predict(batch.x[0]).clipByValue(0, 1);
+		//});
+		let validationPrediction = tf.tidy(() => {
+			return model.predict(batch.vx).clipByValue(0, 1);
+		});
+		let stopTimerPrediction = performance.now();
+
+		//await tf.browser.toPixels(tf.unstack(predictedImage)[0],predicted);
+		let validationLoss = tf.tidy(() => {
+			return model.evaluate(batch.vx, batch.vy).clipByValue(0, 1);
+		});
+
+		await tf.browser.toPixels(tf.unstack(validationPrediction)[0], validationPredicted);
+		await model.save('indexeddb://' + MODEL_SAVE_NAME);
+		loss = history.history.loss[0].toFixed(5);
+		validationLoss = "" + validationLoss.dataSync();
+		document.getElementById("log").innerHTML =
+			("iteration " + (counter + 1) + "/" + iterations + 
+			"<br/>loss(mae): " + loss + 
+			"<br/>training: " + (stopTimerTraining - startTimerTraining).toFixed(0) + "ms" +
+			"<br/>prediction: " + (stopTimerPrediction - startTimerPrediction).toFixed(0) + "ms" +
+			"<br/>validation loss(mae): " + validationLoss.substr(0, 7)
+		);
+	}
+}
+</script>
+
+<!---------------------------------------------------------------------------->
+<script>//save function
+async function saveModel(){	
+	const saveResult = await model.save('downloads://suprpixl_' + loss);
+}
+</script>
+
+<!---------------------------------------------------------------------------->
+</head> <!-- html document -->
+<body>
+	<div id="log"></div><br/>
+	<button id="download" type="button" value="download model files" onclick="saveModel();">download model files</button><br/><br/>
+<!--	<img id="smallTrainingImage" src="train_128p.jpg"/> (low resolution)<br/>
+	<img id="bigTrainingImage" src="train_256p.jpg"/> (ground truth)<br/>
+	<canvas id="predicted"></canvas> (predicted output)<br/>
+	<img id="browserScaled" src="train_128p.jpg" width="256px" height="256px"/> (browser upscaled)<br/>
+	<hr>
+-->	<img id="smallValidationImage" src="validation_128p.jpg"/> (validation image)<br/>
+	<img id="bigValidationImage" src="validation_256p.jpg"/> (validation ground truth)<br/>
+	<canvas id="validationPredicted"></canvas> (validation prediction)<br/>
+	<img id="validationBrowserScaled" src="validation_128p.jpg" width="256px" height="256px"/> (validation browser upscaled)<br/>
+	<img id="smallTrainingImage1" src="train1_128p.jpg" style="display: none;"/>
+	<img id="bigTrainingImage1" src="train1_256p.jpg" style="display: none;"/>
+	<img id="smallTrainingImage2" src="train2_128p.jpg" style="display: none;"/>
+	<img id="bigTrainingImage2" src="train2_256p.jpg" style="display: none;"/>
+	<img id="smallTrainingImage3" src="train3_128p.jpg" style="display: none;"/>
+	<img id="bigTrainingImage3" src="train3_256p.jpg" style="display: none;"/>
+	<img id="smallTrainingImage4" src="train4_128p.jpg" style="display: none;"/>
+	<img id="bigTrainingImage4" src="train4_256p.jpg" style="display: none;"/>
+
+</body>
+
+<!---------------------------------------------------------------------------->
+<script>//starting function
+window.onload = async function(){
+	setTimeout(async function(){
+		await globalVars();
+		await loadModel();
+		await startTraining();
+	}, 1000);
+}
+</script>
+</html>
