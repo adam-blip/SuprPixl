@@ -14,46 +14,95 @@
 <!---------------------------------------------------------------------------->
 <script>//global vars
 	function globalVars(){
-		height = 128; //can be changed before prediction, because we only save the weights and build the model from scratch each time
-		width = 128;
-		fileCounter = 0;
+        window.LEARNING_RATE = 0.001;
+		window.OPTIMIZER = tf.train.adam(LEARNING_RATE);
+		window.LOSS = 'meanAbsoluteError';
+		window.fileCounter = 0;
+        window.model = null;
+        document.getElementById('upload-json').value = "";
+        document.getElementById('upload-weights').value = "";
+        document.getElementById('upload-image').value = "";
 		console.log(tf.version);
 		tf.disableDeprecationWarnings();
 		tf.enableProdMode();
 		tf.webgl.forceHalfFloat();
-		document.getElementById('uploaded').height = height;
-		document.getElementById('uploaded').width = width;
-		document.getElementById('predicted').height = height;
-		document.getElementById('predicted').width = width;
 	}
 </script>
 
 <!---------------------------------------------------------------------------->
-<script>//build and load model
+<script>//start prediction
 async function startPrediction(){
 	document.getElementById('input').style = "display: none";
     console.log('loading model...');
-    let model = await tf.loadLayersModel(tf.io.browserFiles([json, weights]));
+    model = await tf.loadLayersModel(tf.io.browserFiles([json, weights]));
 	console.log('loading uploaded image...');
 	document.getElementById('uploadedImage').src = URL.createObjectURL(image);
-	await sleep(1000);
-	document.getElementById('uploaded').getContext('2d').drawImage(document.getElementById('uploadedImage'), 0, 0); 
-	console.log('converting uploaded image...');
-	let lowResolution = [];
-	lowResolution.push( tf.tidy(()=>{
-		return tf.div(tf.browser.fromPixels(document.getElementById('uploaded'), 3), tf.scalar(256));
-	}));
-	console.log('predicting upscaled image...');
-	let highResolution = tf.tidy(() => {
-		return model.predict(tf.stack(lowResolution)).clipByValue(0, 1);
-	});
-	console.log('showing upscaled image...');
-	await tf.browser.toPixels(tf.unstack(highResolution)[0], predicted);
-	console.log('showing browser upscaled image...');
-	document.getElementById('browserScaled').src = URL.createObjectURL(image);
-	document.getElementById('browserScaled').height = height * 2;
-	document.getElementById('browserScaled').width = width * 2;
-	document.getElementById('output').style = "display: unset";
+	document.getElementById('uploadedImage').onload = async function(){
+        let height = document.getElementById('uploadedImage').height;
+        let width = document.getElementById('uploadedImage').width;
+        if (height % 4 != 0){
+            height = height - (height % 4)
+            document.getElementById('uploadedImage').height = height;
+        }
+        if (width % 4 != 0){
+            width = width - (width % 4);
+            document.getElementById('uploadedImage').width = width;
+        }
+        
+        document.getElementById('uploaded').height = height;
+        document.getElementById('uploaded').width = width;
+        document.getElementById('predicted').height = height * 2;
+        document.getElementById('predicted').width = width * 2;
+
+        let weights_sepConv = model.getLayer('separable_conv2d_SeparableConv2D1').getWeights();
+        let weights_conv = model.getLayer('conv2d_Conv2D1').getWeights();
+
+        let input = tf.input({shape: [height, width, 3]});
+        let output = input;
+        output =  tf.layers.separableConv2d({kernelSize: 3, filters: 48, padding: 'same', strides: 1, activation: 'relu'}).apply(output);
+		output =  tf.layers.conv2d({kernelSize: 8, filters: 192, padding: 'same', strides: 4, activation: 'linear'}).apply(output);
+		
+        function pixelShuffle(inputs, filters){
+			let outputs = inputs;
+            outputs = tf.layers.permute({dims: [3, 1, 2]}).apply(outputs);
+			outputs = tf.layers.reshape({targetShape: [2, 2, outputs.shape[1] / 4, outputs.shape[2], outputs.shape[3]]}).apply(outputs);
+			outputs = tf.layers.permute({dims: [3, 4, 1, 5, 2]}).apply(outputs);
+			outputs = tf.layers.reshape({targetShape: [outputs.shape[1], outputs.shape[2] * outputs.shape[3], outputs.shape[4] * outputs.shape[5]]}).apply(outputs);
+			outputs = tf.layers.permute({dims: [2, 3, 1]}).apply(outputs);
+			return outputs;
+		}
+        
+        output = pixelShuffle(output, 192);
+		output = pixelShuffle(output, 48);
+		output = pixelShuffle(output, 12);
+
+		let upscaled = tf.layers.upSampling2d({size: [2, 2]}).apply(input);
+		output = tf.layers.add().apply([upscaled, output])
+        model = tf.model({inputs: input, outputs: output});
+        
+        model.getLayer('separable_conv2d_SeparableConv2D1').setWeights(weights_sepConv);
+        model.getLayer('conv2d_Conv2D1').getWeights(weights_conv);
+
+model.summary();
+
+        document.getElementById('uploaded').getContext('2d').drawImage(document.getElementById('uploadedImage'), 0, 0); 
+        console.log('converting uploaded image...');
+        let lowResolution = [];
+        lowResolution.push( tf.tidy(()=>{
+            return tf.div(tf.browser.fromPixels(document.getElementById('uploaded'), 3), tf.scalar(256));
+        }));
+        console.log('predicting upscaled image...');
+        let highResolution = tf.tidy(() => {
+            return model.predict(tf.stack(lowResolution)).clipByValue(0, 1);
+        });
+        console.log('showing upscaled image...');
+        await tf.browser.toPixels(tf.unstack(highResolution)[0], predicted);
+        console.log('showing browser upscaled image...');
+        document.getElementById('browserScaled').src = URL.createObjectURL(image);
+        document.getElementById('browserScaled').height = height * 2;
+        document.getElementById('browserScaled').width = width * 2;
+        document.getElementById('output').style = "display: unset";
+    }
 }
 </script>
 
@@ -81,7 +130,7 @@ var loadedImage = function(event) {
 <body>
 	<div id="log"></div><br/>
 	<div id="input">
-		<input type="file" id="upload-json" accept="application/json" onchange="loadedJSON(event)"/> (model json file)<br/>
+		<input type="file"  id="upload-json" accept="application/json" onchange="loadedJSON(event)"/> (model json file)<br/>
 		<input type="file" id="upload-weights" accept=".bin" onchange="loadedWeights(event)"/> (model weights)<br/>
 		<input type="file" id="upload-image" accept="image/*" onchange="loadedImage(event)"/> (image file)<br/>
 	</div>
